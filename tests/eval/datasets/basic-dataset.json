@@ -1,29 +1,80 @@
 {
   "eval_cases": [
     {
-      "eval_case_id": "greeting",
+      "eval_case_id": "clear_groceries",
       "prompt": {
         "role": "user",
-        "parts": [{"text": "Hello, what can you help me with?"}]
-      }
-    },
-    {
-      "eval_case_id": "weather_query",
-      "prompt": {
-        "role": "user",
-        "parts": [{"text": "What's the weather like in San Francisco?"}]
-      }
-    },
-    {
-      "eval_case_id": "capital_lookup",
-      "prompt": {
-        "role": "user",
-        "parts": [{"text": "What is the capital of France?"}]
+        "parts": [{"text": "SAFEWAY #1542 GROCERY STORE"}]
       },
       "reference": {
         "response": {
           "role": "model",
-          "parts": [{"text": "The capital of France is Paris."}]
+          "parts": [{"text": "{\"category\": \"Groceries\", \"confidence\": 0.95, \"reasoning\": \"Safeway is a supermarket chain\"}"}]
+        }
+      }
+    },
+    {
+      "eval_case_id": "clear_utilities",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "MDU-NATURAL GAS UTILITY PMT"}]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [{"text": "{\"category\": \"Utilities\", \"confidence\": 0.95, \"reasoning\": \"Natural gas utility payment\"}"}]
+        }
+      }
+    },
+    {
+      "eval_case_id": "ambiguous_merchant_fallback",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "PONY EXPRESS-O BELLE FOURCHE SD"}]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [{"text": "{\"category\": \"Food & Dining\", \"confidence\": 0.9, \"reasoning\": \"Local coffee/espresso shop identified via web search\"}"}]
+        }
+      }
+    },
+    {
+      "eval_case_id": "check_manual_review",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "CHECK #1042"}]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [{"text": "{\"category\": \"Manual Review Required\", \"confidence\": 0.9, \"reasoning\": \"Check transaction with no merchant name\"}"}]
+        }
+      }
+    },
+    {
+      "eval_case_id": "atm_cash_withdrawal",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "ATM WITHDRAWAL #4821 MAIN ST"}]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [{"text": "{\"category\": \"Cash Withdrawal\", \"confidence\": 0.9, \"reasoning\": \"ATM withdrawal\"}"}]
+        }
+      }
+    },
+    {
+      "eval_case_id": "unresolvable_fragment",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "MISC ADJ 000000"}]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [{"text": "{\"category\": \"Unknown\", \"confidence\": 0.0, \"reasoning\": \"Fragmented description with no identifiable merchant\"}"}]
         }
       }
     }
