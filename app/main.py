@@ -17,7 +17,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from app.agent import CONFIDENCE_THRESHOLD, CategoryOutput, node1_agent, node2_agent
+from app.agent import CONFIDENCE_THRESHOLD, CategoryOutput, node1_agent, search_agent
 from app.skills.transaction_categorizer.tools import mask_pii_local
 
 # =====================================================================
@@ -55,18 +55,16 @@ def save_cache(cache_data: dict) -> None:
 # 2. Isolated Agent Invocation
 # =====================================================================
 async def _run_agent_turn(
-    runner: Runner, session_service: InMemorySessionService, sanitized_text: str
-) -> CategoryOutput:
-    """Spawns an isolated session for a single transaction turn and parses the
-    structured JSON response into a CategoryOutput.
+    runner: Runner, session_service: InMemorySessionService, user_text: str
+) -> str:
+    """Spawns an isolated session for a single transaction turn and returns
+    the agent's final response text.
     """
     session_id = f"txn-{uuid.uuid4().hex}"
     await session_service.create_session(
         app_name=APP_NAME, user_id="batch_worker", session_id=session_id
     )
-    message = types.Content(
-        role="user", parts=[types.Part.from_text(text=sanitized_text)]
-    )
+    message = types.Content(role="user", parts=[types.Part.from_text(text=user_text)])
 
     final_text = None
     async for event in runner.run_async(
@@ -80,6 +78,14 @@ async def _run_agent_turn(
     if not final_text:
         raise ValueError("No final response text returned by agent")
 
+    return final_text
+
+
+async def _run_classifier(
+    runner: Runner, session_service: InMemorySessionService, user_text: str
+) -> CategoryOutput:
+    """Runs Node 1's structured classifier and parses its JSON response."""
+    final_text = await _run_agent_turn(runner, session_service, user_text)
     return CategoryOutput(**json.loads(final_text))
 
 
@@ -93,7 +99,7 @@ async def classify_transaction(
     semaphore: asyncio.Semaphore,
     session_service: InMemorySessionService,
     node1_runner: Runner,
-    node2_runner: Runner,
+    search_runner: Runner,
 ) -> str:
     # Step 1: Shared Memory Cache Filter
     if raw_description in cache:
@@ -108,7 +114,7 @@ async def classify_transaction(
         # Step 3 & 4: Atomic Agent Allocation + Node 1 Primary Inference
         print(f"Row {idx:03d} | Evaluating Input: '{sanitized_description}'")
         try:
-            node1_result = await _run_agent_turn(
+            node1_result = await _run_classifier(
                 node1_runner, session_service, sanitized_description
             )
         except Exception as e:
@@ -126,14 +132,22 @@ async def classify_transaction(
             }
             return node1_result.category
 
-        # Step 5: Node 2 Context Expansion Fallback
+        # Step 5: Node 2 Context Expansion Fallback - search for grounded
+        # context, then re-run Node 1's classifier with that context appended.
         print(
             f"        | Marginal Confidence ({node1_result.confidence:.2f}). "
             "Triggering Secondary Contextual Fallback..."
         )
         try:
-            node2_result = await _run_agent_turn(
-                node2_runner, session_service, sanitized_description
+            search_context = await _run_agent_turn(
+                search_runner, session_service, sanitized_description
+            )
+            fallback_prompt = (
+                f"Transaction: {sanitized_description}\n"
+                f"Web Search Context: {search_context}"
+            )
+            node2_result = await _run_classifier(
+                node1_runner, session_service, fallback_prompt
             )
         except Exception as e:
             print(f"Row {idx:03d} | Node 2 exception: {e}", file=sys.stderr)
@@ -187,8 +201,8 @@ async def run_batch_processing() -> None:
     node1_runner = Runner(
         agent=node1_agent, app_name=APP_NAME, session_service=session_service
     )
-    node2_runner = Runner(
-        agent=node2_agent, app_name=APP_NAME, session_service=session_service
+    search_runner = Runner(
+        agent=search_agent, app_name=APP_NAME, session_service=session_service
     )
 
     tasks = [
@@ -199,7 +213,7 @@ async def run_batch_processing() -> None:
             semaphore,
             session_service,
             node1_runner,
-            node2_runner,
+            search_runner,
         )
         for idx, row in df.iterrows()
     ]

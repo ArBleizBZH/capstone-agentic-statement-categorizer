@@ -4,6 +4,16 @@ Defines the two atomic, isolated worker agents described in DESIGN_SPEC.md
 section 5 (Node 1: primary classification, Node 2: search-augmented fallback),
 both driven by the `app/skills/*/SKILL.md` instruction manifests rather than
 inline prompt text, to avoid LLM context rot via progressive disclosure.
+
+Node 2 is deliberately split into two model calls rather than one: Gemini
+rejects combining a built-in tool (`google_search`) with the function-calling
+mechanism ADK uses to enforce `output_schema` ("Built-in tools and Function
+Calling cannot be combined in the same request"). So `search_agent` only
+gathers grounded search context (plain text, no schema), and `node1_agent` is
+re-invoked with that context appended to make the final structured decision -
+matching fallback_search/SKILL.md, which only ever describes searching and
+formatting context "to be fed back into the LLM during secondary
+classification", not deciding the category itself.
 """
 
 from pathlib import Path
@@ -74,18 +84,14 @@ def _load_skill_instruction(skill_name: str) -> str:
 
 
 _NODE1_INSTRUCTION = _load_skill_instruction("transaction_categorizer") + _CONFIDENCE_NOTE
-_NODE2_INSTRUCTION = (
-    _NODE1_INSTRUCTION
-    + "\n\n"
-    + _load_skill_instruction("fallback_search")
-    + "\n\nAfter gathering search context, re-attempt mapping the entity "
-    "against the taxonomy above and return the same JSON contract."
-)
+_SEARCH_INSTRUCTION = _load_skill_instruction("fallback_search")
 
 # =====================================================================
 # 3. ADK Agent Framework Initialization
 # =====================================================================
 # Node 1: primary zero-shot classifier (DESIGN_SPEC.md section 5, step 4).
+# Also reused for the final re-classification pass after Node 2's search
+# (same taxonomy/schema, prompt augmented with search context - see app/main.py).
 node1_agent = Agent(
     name="transaction_categorizer",
     model="gemini-2.5-flash",
@@ -93,15 +99,14 @@ node1_agent = Agent(
     output_schema=CategoryOutput,
 )
 
-# Node 2: search-augmented fallback classifier (DESIGN_SPEC.md section 5, step 5).
-# `output_schema` and `tools` are supported together by the ADK runtime: tools
-# are exposed during the thought loop, structure is enforced on the final output.
-node2_agent = Agent(
+# Node 2: search-augmented fallback (DESIGN_SPEC.md section 5, step 5).
+# Gathers grounded context via the native google_search tool only - no
+# output_schema here (see module docstring for why it can't carry one).
+search_agent = Agent(
     name="fallback_search",
     model="gemini-2.5-flash",
-    instruction=_NODE2_INSTRUCTION,
+    instruction=_SEARCH_INSTRUCTION,
     tools=[google_search],
-    output_schema=CategoryOutput,
 )
 
 # Exposing root_agent/app at module level allows 'agents-cli' (playground, A2A,

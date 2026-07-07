@@ -1,1 +1,34 @@
-{}
+{
+  "ACH ELECTRONIC DEPOSIT CORP PAYROLL XXXXX": {
+    "category": "Income",
+    "confidence": 1.0
+  },
+  "BH ENERGY UTILITY BILL AUTO-PMT": {
+    "category": "Utilities",
+    "confidence": 1.0
+  },
+  "NETFLIX.COM DIG RECURRING": {
+    "category": "Entertainment",
+    "confidence": 1.0
+  },
+  "CHEVRON/BIG D OIL BELLE FOURCHE": {
+    "category": "Gas & Fuel",
+    "confidence": 1.0
+  },
+  "PONY EXPRESS-O BELLE FOURCHE SD": {
+    "category": "Food & Dining",
+    "confidence": 0.95
+  },
+  "VERIZON WIRELESS AUTO-PAY": {
+    "category": "Utilities",
+    "confidence": 1.0
+  },
+  "WM SUPERCENTER #1543 RETAIL": {
+    "category": "Shopping",
+    "confidence": 0.95
+  },
+  "8TH AVENUE BAKERY ARTISAN": {
+    "category": "Food & Dining",
+    "confidence": 0.95
+  }
+}
