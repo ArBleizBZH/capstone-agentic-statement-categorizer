@@ -16,31 +16,35 @@ The workspace enforces a modular structure designed to support both local batch 
 
 ```text
 statement-categorizer/
-+-- data/
-¦   +-- input/                     <- Inbound raw statement CSV source folder
-¦   +-- output/                    <- Outbound compiled transaction target folder
-¦   +-- cache.json                 <- Persistent historical classification cache
 +-- app/
-¦   +-- __init__.py
-¦   +-- agent.py                   <- Core ADK Agent & Workflow instance definitions
-¦   +-- main.py                    <- Asynchronous Batch Orchestrator entrypoint
-¦   +-- skills/
-¦       +-- transaction-categorizer/
-¦       ¦   +-- SKILL.md           <- Node 1 Primary classification instructions
-¦       ¦   +-- tools.py
-¦       +-- fallback-search/
-¦           +-- SKILL.md           <- Node 2 Context enlargement instruction harness
-¦           +-- tools.py
+ï¿½   +-- __init__.py
+ï¿½   +-- agent.py                   <- Core ADK Agent & Workflow instance definitions
+ï¿½   +-- main.py                    <- Asynchronous Batch Orchestrator entrypoint
+ï¿½   +-- skills/
+ï¿½   ï¿½   +-- transaction_categorizer/
+ï¿½   ï¿½   ï¿½   +-- SKILL.md           <- Node 1 Primary classification instructions
+ï¿½   ï¿½   ï¿½   +-- tools.py           <- mask_pii_local() local PII gateway
+ï¿½   ï¿½   +-- fallback_search/
+ï¿½   ï¿½       +-- SKILL.md           <- Node 2 search-context instruction harness
+ï¿½   +-- data/
+ï¿½       +-- input/                     <- Inbound raw statement CSV source folder
+ï¿½       +-- output/                    <- Outbound compiled transaction target folder
+ï¿½       +-- cache.json                 <- Persistent historical classification cache
 +-- pyproject.toml                 <- Project metadata and uv dependency locks
-+-- DESIGN_SPEC_FINAL.md           <- System design specification
++-- DESIGN_SPEC.md                 <- System design specification
 ```
 
+Note: `fallback_search/` has no `tools.py`. The native `google_search` tool is
+imported and attached directly on the search-only agent defined in
+`app/agent.py` (see sections 5 and 7) rather than wrapped in a skill tool
+module.
+
 ### File Ingestion Mechanics
-1. **Target Identification:** The orchestration script scans `data/input/` on execution and isolates the single most recently modified CSV file.
+1. **Target Identification:** The orchestration script scans `app/data/input/` on execution and isolates the single most recently modified CSV file.
 2. **Pandas Extraction:** The selected target is loaded into a structured Pandas DataFrame to enforce strict data type boundaries during memory manipulation.
 
 ### Output Serialization
-Upon batch termination, the updated DataFrame is exported to `data/output/` using the explicit naming prefix: `categorized_[original_filename].csv`.
+Upon batch termination, the updated DataFrame is exported to `app/data/output/` using the explicit naming prefix: `categorized_[original_filename].csv`.
 
 ---
 
@@ -55,11 +59,12 @@ The sink architecture appends a final validated classification string, maintaini
 `Transaction Date`, `Post Date`, `Description`, `Type`, `Amount`, `Memo`, `Category`
 
 ### LLM Interface Contract
-Stochastic nodes are bound to an explicit structured JSON output schema to ensure predictable downstream validation:
+Stochastic nodes are bound to an explicit structured JSON output schema to ensure predictable downstream validation. `category` is not a free-form string: it is constrained to a `Literal` enum of the 17 Master Taxonomy values (section 4) - including the mandatory `"Unknown"` fallback - enforced natively via the ADK `output_schema` mechanism (a Pydantic model, `CategoryOutput` in `app/agent.py`), not by prompt instruction alone:
 ```json
 {
-  "category": "string",
-  "confidence": float
+  "category": "Income | Utilities | Entertainment | Food & Dining | Shopping | Gas & Fuel | Insurance | Housing | Medical & Health | Auto Loan | Groceries | Travel & Recreation | Subscriptions & Software | Home Improvement | Manual Review Required | Cash Withdrawal | Unknown",
+  "confidence": float,
+  "reasoning": "string | null"
 }
 ```
 
@@ -92,69 +97,96 @@ Every transaction must resolve cleanly to exactly one of the following 17 standa
 
 ```text
               [Start: app/main.py Ingestion Engine]
-                                ¦
+                                ï¿½
              [Read cache.json into Global Memory Dict]
-                                ¦
+                                ï¿½
              [Load Target Input CSV into Pandas DataFrame]
-                                ¦
+                                ï¿½
           [Instantiate Bounded Concurrency Semaphore (Capped 3-5)]
-                                ¦
+                                ï¿½
      +-----------------------------------------------------+
      ?                                                     ?
 [Worker Task: Row 1]                                  [Worker Task: Row N]
-     ¦                                                     ¦
+     ï¿½                                                     ï¿½
      +-? 1. Check Shared Memory Cache Dict (Hit) ----------+-? Apply Category --+
-     ¦                                                     ¦                    ¦
-     +-? (Cache Miss)                                      ¦                    ¦
-     ¦     ¦                                               ¦                    ¦
-     ¦     ?                                               ¦                    ¦
-     ¦   2. Apply Local Regex PII Masking Gateway          ¦                    ¦
-     ¦     ¦                                               ¦                    ¦
-     ¦     ?                                               ¦                    ¦
-     ¦   3. Spawn Isolated ADK Worker Agent                         ¦                    ¦
-     ¦     ¦                                               ¦                    ¦
-     ¦     ?                                               ¦                    ¦
-     ¦   4. Execute Node 1: "transaction-categorizer" Skill¦                    ¦
-     ¦     ¦                                               ¦                    ¦
-     ¦     +-? (Confidence >= 0.85) -----------------------+-? Update Memory    ¦
-     ¦     ¦                                               ¦   Cache & Apply    ¦
-     ¦     +-? (Confidence < 0.85)                         ¦                    ¦
-     ¦           ¦                                         ¦                    ¦
-     ¦           ?                                         ¦                    ¦
-     ¦         5. Execute Node 2: "fallback-search" Skill  ¦                    ¦
-     ¦           ¦  (Invokes native google_search tool)    ¦                    ¦
-     ¦           ¦                                         ¦                    ¦
-     ¦           +-? (Disambiguates and matches taxonomy) -+-? Update Memory    ¦
-     ¦           ¦                                         ¦   Cache & Apply    ¦
-     ¦           +-? (Confidence < 0.85 / Exception / 429) +-? Apply "Unknown"  ¦
-     ¦                                                     ¦                    ¦
-     +-----------------------------------------------------+                    ¦
-                                ?                                               ¦
-             [Await completion of all asyncio worker tasks]                    ¦
-                                ¦                                               ¦
-            [Flush Local Memory Cache Dict to data/cache.json] ?----------------+
-                                ¦
-            [Serialize output to data/output/ directory]
-                                ¦
+     ï¿½                                                     ï¿½                    ï¿½
+     +-? (Cache Miss)                                      ï¿½                    ï¿½
+     ï¿½     ï¿½                                               ï¿½                    ï¿½
+     ï¿½     ?                                               ï¿½                    ï¿½
+     ï¿½   2. Apply Local Regex PII Masking Gateway          ï¿½                    ï¿½
+     ï¿½     ï¿½                                               ï¿½                    ï¿½
+     ï¿½     ?                                               ï¿½                    ï¿½
+     ï¿½   3. Spawn Isolated ADK Session (per-row)            ï¿½                    ï¿½
+     ï¿½     ï¿½                                               ï¿½                    ï¿½
+     ï¿½     ?                                               ï¿½                    ï¿½
+     ï¿½   4. Execute Node 1: "transaction_categorizer" Agent ï¿½                    ï¿½
+     ï¿½     ï¿½  (structured output_schema, no tools)         ï¿½                    ï¿½
+     ï¿½     +-? (Confidence >= 0.85) -----------------------+-? Update Memory    ï¿½
+     ï¿½     ï¿½                                               ï¿½   Cache & Apply    ï¿½
+     ï¿½     +-? (Confidence < 0.85)                         ï¿½                    ï¿½
+     ï¿½           ï¿½                                         ï¿½                    ï¿½
+     ï¿½           ?                                         ï¿½                    ï¿½
+     ï¿½     5a. Execute Node 2a: "fallback_search" Agent     ï¿½                    ï¿½
+     ï¿½           ï¿½  (native google_search tool, plain-text ï¿½                    ï¿½
+     ï¿½           ï¿½   output - NO output_schema; see note)  ï¿½                    ï¿½
+     ï¿½           ?                                         ï¿½                    ï¿½
+     ï¿½     5b. Node 2b: Re-invoke Node 1 Agent with the     ï¿½                    ï¿½
+     ï¿½           original description + search context     ï¿½                    ï¿½
+     ï¿½           appended                                   ï¿½                    ï¿½
+     ï¿½           (structured output_schema, no tools)       ï¿½                    ï¿½
+     ï¿½           ï¿½                                         ï¿½                    ï¿½
+     ï¿½           +-? (Confidence >= 0.85) ------------------+-? Update Memory    ï¿½
+     ï¿½           ï¿½                                         ï¿½   Cache & Apply    ï¿½
+     ï¿½           +-? (Confidence < 0.85 / Exception / 429) +-? Apply "Unknown"  ï¿½
+     ï¿½                                                     ï¿½                    ï¿½
+     +-----------------------------------------------------+                    ï¿½
+                                ?                                               ï¿½
+             [Await completion of all asyncio worker tasks]                    ï¿½
+                                ï¿½                                               ï¿½
+            [Flush Local Memory Cache Dict to app/data/cache.json] ?-----------+
+                                ï¿½
+            [Serialize output to app/data/output/ directory]
+                                ï¿½
                                [End]
 ```
 
+> **Why Node 2 is two calls, not one:** the Gemini API rejects combining a
+> built-in tool (`google_search`) with the function-calling mechanism ADK
+> uses to enforce `output_schema` in the same request ("Built-in tools and
+> Function Calling cannot be combined in the same request"). So the fallback
+> is split into a search-only agent call (step 5a, plain text, no schema)
+> followed by a second call to the *same* Node 1 classifier agent (step 5b,
+> schema-enforced, no tools) with the search context appended to the prompt.
+> This also matches `fallback_search/SKILL.md`, which only ever describes
+> searching and formatting context "to be fed back into the LLM during
+> secondary classification" - it never claims to decide the category itself.
+
 ### Execution Stage Breakdown
-1. **Shared Memory Cache Filter (Local):** To prevent asynchronous race conditions and file-locking bottlenecks, `data/cache.json` is ingested into a native Python dictionary exactly *once* at startup. Workers scan this in-memory collection. If a string match hits, the cached category is mapped instantly, eliminating LLM execution.
-2. **Local PII Masking Gateway (Security):** If a cache miss occurs, the transaction description is processed locally using regex utilities. Elements like credit card tracking blocks, invoice IDs, and specific numeric account tags are normalized (e.g., `[REDACTED_CARD]`) before passing out of the machine.
-3. **Atomic Agent Allocation (ADK Layer):** A dedicated, short-lived `google.adk` Agent instance is instantiated for the isolated transaction row. It runs concurrently inside the boundaries of an `asyncio.Semaphore` block to maintain a stable, predictable Requests-Per-Minute threshold.
-4. **Primary Inference (Node 1 - Categorizer Skill):** The agent runs the sanitized description against the instructions loaded via the `transaction-categorizer` skill. If the JSON validation returns a confidence score $\ge 0.85$, the worker commits the result to the shared in-memory dictionary, writes the category to the DataFrame row, and finishes.
-5. **Context Expansion (Node 2 - Fallback Search Skill):** If the classification confidence falls below $0.85$, the agent switches context to the `fallback-search` skill. This layer equips the agent with the framework's native `Google Search` tool. The agent executes a live web search on the fragmented vendor string (e.g., `"CRAZEE COW Belle Fourche"`), processes the top web snippets to identify the core business function, and extracts relevant keywords to disambiguate the item. It then re-attempts mapping the entity against the 17-item taxonomy. If successful, the results are committed to the memory cache.
-6. **Graceful Pipeline Isolation:** If Node 2 cannot resolve the classification or if network exhaustion faults (such as a 429 rate limit or connectivity dropout) occur inside a worker task, the error is intercepted cleanly by an internal `try/except` boundary. The system logs the failure message to standard error, flags the target cell as `"Unknown"` to maintain complete downstream compliance, and keeps the concurrent batch tasks moving without system interruption.
-7. **Cache Flush Synchronization:** Once all parallel worker tasks resolve, the main thread performs a single atomic write operation, flushing the updated memory dictionary cleanly back onto disk at `data/cache.json`.
+1. **Shared Memory Cache Filter (Local):** To prevent asynchronous race conditions and file-locking bottlenecks, `app/data/cache.json` is ingested into a native Python dictionary exactly *once* at startup. Workers scan this in-memory collection. If a string match hits, the cached category is mapped instantly, eliminating LLM execution.
+2. **Local PII Masking Gateway (Security):** If a cache miss occurs, the transaction description is processed locally using regex utilities (`mask_pii_local`). Card-number-length digit sequences and long bank-account/SSN-style identifiers are normalized (e.g., `[REDACTED_CARD]`, `[REDACTED_ACCOUNT]`) before passing out of the machine, while short numeric tokens that carry classification signal (check numbers, store numbers) are left untouched.
+3. **Atomic Agent Allocation (ADK Layer):** A fresh, isolated ADK session is created for the transaction row (unique session id per row, per call), so no conversational context bleeds between rows or between Node 1 and Node 2 calls. Rows run concurrently inside the boundaries of an `asyncio.Semaphore` block to maintain a stable, predictable Requests-Per-Minute threshold.
+4. **Primary Inference (Node 1 - `transaction_categorizer` Agent):** The agent runs the sanitized description against the instructions loaded via the `transaction_categorizer` skill, returning a schema-validated `CategoryOutput` (category/confidence/reasoning). If confidence $\ge 0.85$, the worker commits the result to the shared in-memory dictionary, writes the category to the DataFrame row, and finishes.
+5. **Context Expansion (Node 2 - Search Then Reclassify):** If confidence falls below $0.85$, the pipeline runs two further calls:
+   - **5a. Search (Node 2a):** a dedicated `fallback_search` agent - equipped only with the framework's native `google_search` tool, carrying no `output_schema` - executes a live web search on the fragmented vendor string (e.g., `"CRAZEE COW Belle Fourche"`) and returns a plain-text summary of what it found.
+   - **5b. Reclassify (Node 2b):** the Node 1 `transaction_categorizer` agent is re-invoked with the original description plus that search-context summary appended to the prompt, and returns a fresh schema-validated `CategoryOutput`. If confidence $\ge 0.85$ this time, the result is committed to the memory cache.
+6. **Graceful Pipeline Isolation:** If step 5b still can't resolve the classification, or if network exhaustion faults (such as a 429 rate limit or connectivity dropout) occur at any point inside a worker task, the error is intercepted cleanly by an internal `try/except` boundary. The system logs the failure message to standard error, flags the target cell as `"Unknown"` to maintain complete downstream compliance, and keeps the concurrent batch tasks moving without system interruption.
+7. **Cache Flush Synchronization:** Once all parallel worker tasks resolve, the main thread performs a single atomic write operation, flushing the updated memory dictionary cleanly back onto disk at `app/data/cache.json`.
 
 ---
 
 ## 6. System Instructions (The Prompt Harness)
-The core agent logic inside the `transaction-categorizer` skill uses a frozen instructional harness to force structured formats and completely eradicate conversational token leakage:
+Structural JSON formatting (raw JSON, no markdown fences, no conversational
+prose, exact field names/types) is **not** left to prompt discipline: it is
+enforced mechanically by the ADK `output_schema` mechanism (the `CategoryOutput`
+Pydantic model in `app/agent.py`, attached to the `transaction_categorizer`
+agent). This eliminates the class of failure where a model wraps its answer
+in ```` ```json ```` fences or adds explanatory prose despite being told not to.
+
+Instructions loaded from the `transaction_categorizer` skill therefore only
+need to carry the *substantive* business logic - the taxonomy and the
+confidence/fallback semantics - not formatting rules:
 
 ```text
-You are a deterministic financial transaction classification agent. 
 Analyze the input transaction string and assign it to exactly one category from the APPROVED_TAXONOMY array.
 
 APPROVED_TAXONOMY: [
@@ -164,31 +196,54 @@ APPROVED_TAXONOMY: [
   "Home Improvement", "Manual Review Required", "Cash Withdrawal", "Unknown"
 ]
 
-CRITICAL CONSTRAINTS:
-1. Output MUST be raw JSON matching this schema exactly: {"category": "string", "confidence": float}
-2. The "confidence" value must be a floating-point number between 0.0 and 1.0 representing your statistical certainty.
-3. DO NOT wrap the output in markdown fences (e.g., do not enclose within ```json ... ```).
-4. Do not emit intro prose, explanatory notes, formatting white-space padding, or concluding remarks. Output ONLY the raw JSON string.
-5. If the transaction description is highly fragmented, ambiguous, or lacks explicit semantic features to cleanly fit the taxonomy, you must fallback to "Unknown" with a confidence score of 0.0.
+Output a "confidence" float between 0.0 and 1.0 representing your statistical
+certainty. If the transaction description is highly fragmented, ambiguous, or
+lacks explicit semantic features to cleanly fit the taxonomy, fall back to
+category "Unknown" with confidence 0.0.
 ```
+
+The `fallback_search` agent (Node 2a) carries a separate, narrower instruction
+set - loaded from `fallback_search/SKILL.md` - describing only how to extract
+a search query and summarize results; it has no `output_schema` at all (see
+section 5's note on why), so it never needs the JSON contract above.
 
 ---
 
 ## 7. Tool & Skill Declarations
-Custom operational routines and native extensions are explicitly isolated into the `app/skills/` runtime directory to guarantee discovery by the execution engine and clear decoupling of algorithmic steps:
+Custom operational routines are isolated into the `app/skills/` runtime directory; the two agent instances that use them are assembled in `app/agent.py`:
 
 ```python
-from typing import Optional, Dict
-
-# Module Path: app/skills/transaction-categorizer/tools.py
+# Module Path: app/skills/transaction_categorizer/tools.py
 def mask_pii_local(transaction_str: str) -> str:
     """
     Deterministically scrubs highly specific identifier metrics (card groups, account strings)
     out of inbound transaction items using compiled local regex parameters.
     """
-    pass
+    ...
 
-# Module Path: app/skills/fallback-search/tools.py
-# Node 2 imports and attaches the framework's native search utility directly:
-# from google.adk.tools import google_search
+# Module Path: app/agent.py
+from google.adk import Agent
+from google.adk.tools import google_search
+
+# Node 1: structured classifier, no tools. Reused verbatim for the Node 2b
+# reclassification pass (same agent, prompt augmented with search context).
+node1_agent = Agent(
+    name="transaction_categorizer",
+    model="gemini-2.5-flash",
+    instruction=...,          # loaded from transaction_categorizer/SKILL.md
+    output_schema=CategoryOutput,
+)
+
+# Node 2a: search-only agent. Native google_search tool, deliberately NO
+# output_schema - see section 5's note on why the two cannot be combined.
+search_agent = Agent(
+    name="fallback_search",
+    model="gemini-2.5-flash",
+    instruction=...,          # loaded from fallback_search/SKILL.md
+    tools=[google_search],
+)
 ```
+
+There is no `app/skills/fallback_search/tools.py`: the native search utility
+is imported and attached directly on `search_agent` above, since it is a
+built-in framework tool rather than a custom function tool.
