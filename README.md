@@ -25,9 +25,10 @@ LLM call per row:
    from the description *before* anything leaves the machine.
 3. A **primary classification agent** (Node 1) maps the sanitized description to
    one of 17 fixed budget categories with a confidence score.
-4. If confidence is low, a **search-augmented fallback agent** (Node 2) uses the
-   native `google_search` grounding tool to look up the merchant and re-attempts
-   classification, rather than guessing or hard-failing.
+4. If confidence is low, a **search agent** (Node 2a) uses the native
+   `google_search` grounding tool to look up the merchant, and the primary
+   classifier is re-invoked with that context to re-attempt classification
+   (Node 2b) — rather than guessing or hard-failing.
 5. Anything still unresolved — or any transaction that errors out (rate limits,
    network faults) — is labeled `Unknown` rather than crashing the batch.
 
@@ -37,8 +38,9 @@ back into the cache so the next run for the same accounts is instant and free.
 
 ## Architecture
 
-Two isolated ADK agents, sharing the same taxonomy and JSON output contract,
-orchestrated by an async batch pipeline:
+Two ADK agents — a structured classifier and a search-only agent — orchestrated
+by an async batch pipeline. Node 1's classifier is reused for both the initial
+attempt and the post-search re-attempt:
 
 ```text
                  [app/main.py: Async Batch Orchestrator]
@@ -59,15 +61,19 @@ orchestrated by an async batch pipeline:
         │      │                                             │
         │      ▼                                             │
         │   Node 1 - transaction_categorizer agent           │
-        │   (google.adk LlmAgent, structured JSON output)    │
+        │   (google.adk LlmAgent, structured output_schema)  │
         │      │                                             │
         │      ├─ confidence ≥ 0.85 ──▶ commit to cache      │
         │      │                                             │
         │      └─ confidence < 0.85                          │
         │             │                                       │
         │             ▼                                       │
-        │      Node 2 - fallback_search agent                 │
-        │      (same agent, + native google_search tool)      │
+        │      Node 2a - fallback_search agent                │
+        │      (google_search tool, plain-text output only)  │
+        │             │                                       │
+        │             ▼                                       │
+        │      Node 2b - Node 1 agent re-invoked with          │
+        │      description + search context appended          │
         │             │                                       │
         │             ├─ confidence ≥ 0.85 ──▶ commit to cache│
         │             └─ else / exception ──▶ "Unknown"        │
@@ -79,6 +85,12 @@ orchestrated by an async batch pipeline:
                                   │
       Write app/data/output/categorized_<original_filename>.csv
 ```
+
+Node 2 is two separate model calls rather than one because Gemini rejects
+combining a built-in tool (`google_search`) with the function-calling
+mechanism ADK uses to enforce `output_schema` in the same request. See
+[`DESIGN_SPEC.md`](./DESIGN_SPEC.md#5-architectural-data-flow) for the full
+explanation.
 
 ### Master taxonomy
 
